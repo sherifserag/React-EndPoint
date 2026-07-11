@@ -1,35 +1,83 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import LoginForm from "./LoginForm";
+import ProductionForm from "./ProductionForm";
+import "./App.css";
+import { HubConnectionBuilder } from "@microsoft/signalr";
+import ProductionLogs from "./ProductionLogs";
 
 function App() {
-  const [fromData, setFromData] = useState({
+  const [token, setToken] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [loginData, setLoginData] = useState({ username: "", password: "" });
+  const [formData, setFormData] = useState({
+    lineId: "",
     status: "Running",
     throughput: 0,
     message: "",
     operator: "",
   });
 
-  const [networkStatus, setNetworkStatus] = useState({ type: "", text: "" });
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [liveUpdates, setLiveUpdates] = useState([]);
+  const [view, setView] = useState("form");
 
-  const handleInputChange = (e) => {
+  useEffect(() => {
+    if (!token) return;
+
+    const newConnection = new HubConnectionBuilder()
+      .withUrl("https://localhost:7076/production-updates", {
+        accessTokenFactory: () => token,
+      })
+      .withAutomaticReconnect()
+      .build();
+
+    newConnection
+      .start()
+      .then(() => {
+        newConnection.on("OnLogBatchInserted", (message) => {
+          setLiveUpdates((prev) => [message, ...prev]);
+        });
+      })
+      .catch((error) => console.error("SignalR Connection Error: ", error));
+
+    return () => {
+      newConnection.off("OnLogBatchInserted");
+      newConnection.stop();
+    };
+  }, [token]);
+
+  const handleLoginChange = (e) => {
     const { name, value } = e.target;
-    setFromData((prevData) => ({
-      ...prevData,
-      [name]: name === "throughput" ? parseInt(value) : value,
+    setLoginData((prev) => ({ ...prev, [name]: value }));
+  };
+
+  const handleProductionChange = (e) => {
+    const { name, value } = e.target;
+    setFormData((prev) => ({
+      ...prev,
+      [name]: name === "throughput" ? Number(value) : value,
     }));
   };
 
-  const handleSubmit = async (e) => {
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    try {
+      const response = await fetch("https://localhost:7076/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(loginData),
+      });
+      if (!response.ok) throw new Error("Login failed");
+      const data = await response.json();
+      setToken(data.token);
+    } catch (error) {
+      alert(error.message);
+    }
+  };
+
+  const handleProductionSubmit = async (e) => {
     e.preventDefault();
     setIsSubmitting(true);
-    setNetworkStatus({ type: "", text: "" });
-
-    const payload = [
-      {
-        ...fromData,
-        timestamp: new Date().toISOString(),
-      },
-    ];
+    const payload = [{ ...formData, timestamp: new Date().toISOString() }];
 
     try {
       const response = await fetch(
@@ -38,174 +86,84 @@ function App() {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
           },
           body: JSON.stringify(payload),
         },
       );
-
-      if (!response.ok) {
-        throw new Error(`Server returned error status: ${response.status}`);
-      }
-
-      setNetworkStatus({
-        type: "success",
-        text: "Telemetry successfully dispatched to the server!",
-      });
-
-      setFromData({
-        lineId: 0,
+      if (!response.ok) throw new Error("Transmission failed");
+      alert("Telemetry successfully dispatched!");
+      setFormData({
+        lineId: "",
         status: "Running",
         throughput: 0,
         message: "",
         operator: "",
       });
     } catch (error) {
-      setNetworkStatus({
-        type: "error",
-        text: error.message || "Network communication failure.",
-      });
+      alert(error.message);
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  const currentPayloadPreview = [
-    {
-      ...fromData,
-      timestamp: new Date().toISOString(),
-    },
-  ];
-
   return (
-    <div
-      style={{
-        padding: "40px",
-        maxWidth: "900px",
-        display: "flex",
-        gap: "40px",
-      }}
-    >
-      <form
-        onSubmit={handleSubmit}
-        style={{
-          flex: 1,
-          background: "#1c2538",
-          padding: "24px",
-          borderRadius: "8px",
-        }}
-      >
-        <h2>New Production Item</h2>
-
-        {networkStatus.text && (
-          <div
-            style={{
-              padding: "12px",
-              borderRadius: "4px",
-              marginBottom: "16px",
-              background:
-                networkStatus.type === "success"
-                  ? "rgba(16, 185, 129, 0.15)"
-                  : "rgba(239, 68, 68, 0.15)",
-              border: `1px solid ${networkStatus.type === "success" ? "#10b981" : "#ef4444"}`,
-              color: networkStatus.type === "success" ? "#34d399" : "#f87171",
-            }}
-          >
-            {networkStatus.text}
+    <div className="dashboard-container">
+      {!token ? (
+        <LoginForm
+          loginData={loginData}
+          onChange={handleLoginChange}
+          onLogin={handleLogin}
+        />
+      ) : (
+        <div>
+          <div className="session-header">
+            <div className="nav-controls">
+              <span className="status-indicator">✓ Secure Session Active</span>
+              <button
+                onClick={() => setView("form")}
+                className={`btn-nav ${view === "form" ? "active" : ""}`}
+              >
+                New Entry
+              </button>
+              <button
+                onClick={() => setView("logs")}
+                className={`btn-nav ${view === "logs" ? "active" : ""}`}
+              >
+                View History
+              </button>
+            </div>
+            <button onClick={() => setToken("")} className="btn btn-danger">
+              Logout
+            </button>
           </div>
-        )}
 
-        <div style={{ marginBottom: "16px" }}>
-          <label style={{ display: "block", marginBottom: "8px" }}>
-            Status
-          </label>
-          <select
-            name="status"
-            value={fromData.status}
-            onChange={handleInputChange}
-            style={{ width: "100%", padding: "8px", boxSizing: "border-box" }}
-            required
-          >
-            <option value="Running">Running</option>
-            <option value="Stopped">Stopped</option>
-            <option value="Maintenance">Maintenance</option>
-            <option value="Error">Error</option>
-          </select>
+          {view === "form" ? (
+            <ProductionForm
+              formData={formData}
+              onChange={handleProductionChange}
+              onSubmit={handleProductionSubmit}
+              isSubmitting={isSubmitting}
+            />
+          ) : (
+            <ProductionLogs token={token} />
+          )}
+          {liveUpdates.length > 0 && (
+            <div className="live-alerts-container">
+              <h3>⚡ Live WebSocket Feeds ({liveUpdates.length})</h3>
+              {liveUpdates.flatMap((batch, batchIdx) =>
+                batch.map((log, logIdx) => (
+                  <div key={`${batchIdx}-${logIdx}`} className="alert-card">
+                    <strong>Line {log.lineId}:</strong> {log.operator} -{" "}
+                    {log.status} ({log.throughput} tons/hr)
+                    {console.log("Live Update Log:", log)}
+                  </div>
+                )),
+              )}
+            </div>
+          )}
         </div>
-
-        <div style={{ marginBottom: "16px" }}>
-          <label style={{ display: "block", marginBottom: "8px" }}>
-            Throughput
-          </label>
-          <input
-            type="number"
-            name="throughput"
-            value={fromData.throughput}
-            onChange={handleInputChange}
-            style={{ width: "100%", padding: "8px", boxSizing: "border-box" }}
-            required
-          />
-        </div>
-
-        <div style={{ marginBottom: "16px" }}>
-          <label style={{ display: "block", marginBottom: "8px" }}>
-            Operator
-          </label>
-          <input
-            type="text"
-            name="operator"
-            value={fromData.operator}
-            onChange={handleInputChange}
-            style={{ width: "100%", padding: "8px", boxSizing: "border-box" }}
-            required
-          />
-        </div>
-
-        <div style={{ marginBottom: "16px" }}>
-          <label style={{ display: "block", marginBottom: "8px" }}>
-            Message
-          </label>
-          <input
-            type="text"
-            name="message"
-            value={fromData.message}
-            onChange={handleInputChange}
-            style={{ width: "100%", padding: "8px", boxSizing: "border-box" }}
-          />
-        </div>
-
-        <button
-          type="submit"
-          disabled={isSubmitting}
-          style={{
-            width: "100%",
-            padding: "10px",
-            background: "#3b82f6",
-            color: "white",
-            border: "none",
-            borderRadius: "4px",
-            cursor: isSubmitting ? "not-allowed" : "pointer",
-            opacity: isSubmitting ? 0.6 : 1,
-          }}
-        >
-          {isSubmitting ? "Transmitting..." : "Send Data"}
-        </button>
-      </form>
-
-      <div
-        style={{
-          flex: 1,
-          background: "#1c2538",
-          padding: "24px",
-          borderRadius: "8px",
-        }}
-      >
-        <h2>Live JSON Payload Preview</h2>
-        <pre
-          style={{ color: "#34d399", fontSize: "14px", whiteSpace: "pre-wrap" }}
-        >
-          {JSON.stringify(currentPayloadPreview, null, 2)}
-        </pre>
-      </div>
+      )}
     </div>
   );
 }
